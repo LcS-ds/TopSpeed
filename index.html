@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TopSpeed - Cyberpunk Tokyo Racer</title>
+  <meta name="description" content="Jogo de corrida arcade 3D web com temática Cyberpunk de Tóquio.">
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Press+Start+2P&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+  
+  <!-- Styles -->
+  <link rel="stylesheet" href="style.css">
+
+  <!-- Three.js from CDN (Global Script to avoid CORS on file://) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- 3D Canvas Container -->
+    <div id="canvas-container"></div>
+
+    <!-- UI Overlay Layer -->
+    <div id="ui-layer">
+
+      <!-- HUD (Active in game) -->
+      <div id="hud" class="hidden">
+        <!-- Top Bar: Positions, Laps, Speed Limit Zone -->
+        <div class="hud-top">
+          <div class="hud-box position-box">
+            <span class="hud-label">POSIÇÃO</span>
+            <span id="hud-position" class="hud-value neon-pink">1<sup>ST</sup><small>/8</small></span>
+          </div>
+
+          <div class="hud-box lap-box">
+            <span class="hud-label">VOLTA</span>
+            <span id="hud-lap" class="hud-value neon-cyan">1 / 3</span>
+            <span id="hud-time" class="hud-subvalue">00:00.00</span>
+          </div>
+
+          <div class="hud-box surface-box">
+            <span class="hud-label">SUPERFÍCIE</span>
+            <span id="hud-surface" class="hud-value neon-yellow">ASFALTO</span>
+          </div>
+
+          <div class="hud-box weather-box">
+            <span class="hud-label">CLIMA</span>
+            <span id="hud-weather" class="hud-value neon-cyan">NOITE CYBER</span>
+          </div>
+        </div>
+
+        <!-- Center Warning Overlay (Speed limit zone, countdowns) -->
+        <div id="center-alert" class="center-alert hidden">
+          <div id="alert-title" class="alert-title">ATENÇÃO! ZONA URBANA DE TÓQUIO</div>
+          <div id="alert-body" class="alert-body">LIMITE DE VELOCIDADE: 80 KM/H</div>
+        </div>
+
+        <div id="race-countdown" class="race-countdown hidden">3</div>
+
+        <!-- Minimap & Curve Radar -->
+        <div class="hud-minimap-container">
+          <canvas id="minimap-canvas" width="160" height="160"></canvas>
+          <div class="minimap-title">TÓQUIO RADAR</div>
+        </div>
+
+        <!-- Bottom Controls Bar & Tachometer Dashboard -->
+        <div class="hud-bottom">
+          <!-- Digital & Gauge Speedometer -->
+          <div class="dash-panel">
+            <div class="tachometer-container">
+              <svg viewBox="0 0 200 120" class="gauge-svg">
+                <!-- Gauge Background Arc -->
+                <path d="M 20 100 A 70 70 0 0 1 180 100" fill="none" stroke="#1d2238" stroke-width="16" stroke-linecap="round" />
+                <!-- Redline Arc -->
+                <path d="M 140 35 A 70 70 0 0 1 180 100" fill="none" stroke="#ff0055" stroke-width="16" stroke-linecap="round" />
+                <!-- Active RPM Arc -->
+                <path id="gauge-rpm-path" d="M 20 100 A 70 70 0 0 1 180 100" fill="none" stroke="#00f3ff" stroke-width="12" stroke-dasharray="251" stroke-dashoffset="251" stroke-linecap="round" />
+              </svg>
+              <div id="gauge-needle" class="gauge-needle"></div>
+              <div class="dash-center-info">
+                <div id="dash-speed" class="dash-speed-text">0</div>
+                <div class="dash-speed-unit">KM/H</div>
+              </div>
+            </div>
+            
+            <div class="dash-gear-box">
+              <span class="dash-gear-label">MARCHA</span>
+              <span id="dash-gear" class="dash-gear-val">1</span>
+            </div>
+          </div>
+
+          <!-- Controls Help Overlay -->
+          <div class="hud-controls-hint">
+            <div class="key-badge">W</div> Acelerar
+            <div class="key-badge">A</div>/<div class="key-badge">D</div> Virar
+            <div class="key-badge">S</div>/ESPAÇO Freio/Drift
+          </div>
+        </div>
+      </div>
+
+      <!-- Main Menu Overlay -->
+      <div id="main-menu" class="menu-overlay">
+        <div class="menu-content">
+          <div class="title-container">
+            <div class="title-sub">NEON HIGHWAY - TOKYO WRC</div>
+            <h1 class="game-title">TOP<span class="neon-pink">SPEED</span></h1>
+            <div class="title-tag">CYBERPUNK ARCADE RACER</div>
+          </div>
+
+          <div class="menu-section">
+            <h2>SELECIONE A PISTA</h2>
+            <div class="track-select-grid">
+              <button type="button" class="track-card active" data-track="0">
+                <div class="track-name">SHIBUYA CYBER-CIRCUIT</div>
+                <div class="track-details">Asfalto Urbano • Noite Cyber • Zona 80 km/h</div>
+              </button>
+              <button type="button" class="track-card" data-track="1">
+                <div class="track-name">FUJI PASS RALLY</div>
+                <div class="track-details">Neve & Terra • Montanha WRC • Aderência Baixa</div>
+              </button>
+              <button type="button" class="track-card" data-track="2">
+                <div class="track-name">TOKYO BAY EXPRESSWAY</div>
+                <div class="track-details">Alta Velocidade • Chuva & Neon • Pista Úmida</div>
+              </button>
+            </div>
+          </div>
+
+          <div class="menu-section">
+            <h2>SELECIONE O SEU VEÍCULO</h2>
+            <div class="car-select-grid">
+              <button type="button" class="car-card active" data-car="0">
+                <div class="car-color-preview" style="background: linear-gradient(135deg, #ff0055, #880022);"></div>
+                <div class="car-name">CANNIBAL RED</div>
+                <div class="car-stats">Vel. Máx: 215 km/h | Aceleração: ★★★★☆</div>
+              </button>
+              <button type="button" class="car-card" data-car="1">
+                <div class="car-color-preview" style="background: linear-gradient(135deg, #00f3ff, #005588);"></div>
+                <div class="car-name">SIDEWINDER CYAN</div>
+                <div class="car-stats">Vel. Máx: 205 km/h | Drift: ★★★★★</div>
+              </button>
+              <button type="button" class="car-card" data-car="2">
+                <div class="car-color-preview" style="background: linear-gradient(135deg, #ffe600, #aa8800);"></div>
+                <div class="car-name">RAZOR YELLOW</div>
+                <div class="car-stats">Vel. Máx: 225 km/h | Aceleração: ★★★★★</div>
+              </button>
+            </div>
+          </div>
+
+          <div class="menu-section menu-options-row">
+            <div class="option-group">
+              <label for="select-difficulty">DIFICULDADE DA IA:</label>
+              <select id="select-difficulty">
+                <option value="easy">FÁCIL (Arcade)</option>
+                <option value="medium" selected>MÉDIO (Equilibrado)</option>
+                <option value="hard">DIFÍCIL (Lendário)</option>
+              </select>
+            </div>
+            <div class="option-group">
+              <label for="select-laps">VOLTAS:</label>
+              <select id="select-laps">
+                <option value="2">2 Voltas</option>
+                <option value="3" selected>3 Voltas</option>
+                <option value="5">5 Voltas</option>
+              </select>
+            </div>
+          </div>
+
+          <button type="button" id="btn-start" class="btn-primary">INICIAR CORRIDA <span class="arrow">▶</span></button>
+        </div>
+      </div>
+
+      <!-- Race Results Screen -->
+      <div id="results-menu" class="menu-overlay hidden">
+        <div class="menu-content results-content">
+          <h1 id="results-title" class="results-header">RESULTADO DA CORRIDA</h1>
+          
+          <div class="player-rank-highlight">
+            <span class="rank-label">SUA POSIÇÃO FINAL</span>
+            <div id="final-position-text" class="rank-value neon-pink">1º LUGAR</div>
+            <div id="final-time-text" class="rank-time">Tempo Total: 02:14.85</div>
+          </div>
+
+          <div class="leaderboard-table-container">
+            <table class="leaderboard-table">
+              <thead>
+                <tr>
+                  <th>POS</th>
+                  <th>PILOTO</th>
+                  <th>VEÍCULO</th>
+                  <th>TEMPO</th>
+                </tr>
+              </thead>
+              <tbody id="leaderboard-body">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+
+          <div class="results-actions">
+            <button type="button" id="btn-restart" class="btn-primary">CORRER NOVAMENTE ↺</button>
+            <button type="button" id="btn-main-menu" class="btn-secondary">MENU PRINCIPAL</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pause Menu -->
+      <div id="pause-menu" class="menu-overlay hidden">
+        <div class="menu-content pause-content">
+          <h1>JOGO PAUSADO</h1>
+          <button type="button" id="btn-resume" class="btn-primary">CONTINUAR</button>
+          <button type="button" id="btn-quit" class="btn-secondary">SAIR PARA O MENU</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Scripts Loaded in Order -->
+  <script src="js/audio.js"></script>
+  <script src="js/track.js"></script>
+  <script src="js/car.js"></script>
+  <script src="js/ai.js"></script>
+  <script src="js/weather.js"></script>
+  <script src="js/game.js"></script>
+</body>
+</html>
