@@ -27,7 +27,8 @@ class AIManager {
     this.bots = [];
 
     let difficultyMult = 1.0;
-    if (difficulty === 'easy') difficultyMult = 0.88;
+    if (difficulty === 'easy') difficultyMult = 0.94;
+    if (difficulty === 'medium') difficultyMult = 1.04;
     if (difficulty === 'hard') difficultyMult = 1.08;
 
     this.botPresets.forEach((preset, idx) => {

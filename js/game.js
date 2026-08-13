@@ -17,6 +17,7 @@ class Game {
     this.gameState = 'menu'; // 'menu', 'countdown', 'racing', 'paused', 'results'
     this.selectedTrackIdx = 0;
     this.selectedCarColor = 0xff0055;
+    this.selectedCarProfile = 'cannibalRed';
     this.totalLaps = 3;
     this.difficulty = 'medium';
 
@@ -59,7 +60,7 @@ class Game {
 
     // 2. Systems Instantiation
     this.trackEngine = new TrackEngine(this.scene);
-    this.playerCar = new CarEngine(this.scene, false, this.selectedCarColor, "VOCÊ");
+    this.playerCar = new CarEngine(this.scene, false, this.selectedCarColor, "VOCÊ", this._getSelectedCarSurfaceProfile());
     this.aiManager = new AIManager(this.scene);
     this.aiManager.totalLaps = this.totalLaps;
     this.weather = new WeatherSystem(this.scene);
@@ -126,7 +127,6 @@ class Game {
         // Preview track in background scene
         this.trackEngine.loadTrack(this.selectedTrackIdx);
         if (this.selectedTrackIdx === 1) this.weather.setWeather('snow', this.trackEngine.currentConfig);
-        else if (this.selectedTrackIdx === 2) this.weather.setWeather('rain', this.trackEngine.currentConfig);
         else this.weather.setWeather('night', this.trackEngine.currentConfig);
       });
     });
@@ -134,6 +134,7 @@ class Game {
     // Car Selection Cards
     const carCards = document.querySelectorAll('.car-card');
     const colors = [0xff0055, 0x00f3ff, 0xffe600];
+    const profiles = ['cannibalRed', 'sidewinderCyan', 'razorYellow'];
     carCards.forEach((card) => {
       card.addEventListener('click', (e) => {
         const target = e.currentTarget;
@@ -141,11 +142,12 @@ class Game {
         target.classList.add('active');
         const carIdx = parseInt(target.getAttribute('data-car')) || 0;
         this.selectedCarColor = colors[carIdx];
+        this.selectedCarProfile = profiles[carIdx];
 
         // Update player car preview color
         if (this.playerCar) {
           this.scene.remove(this.playerCar.mesh);
-          this.playerCar = new CarEngine(this.scene, false, this.selectedCarColor, "VOCÊ");
+          this.playerCar = new CarEngine(this.scene, false, this.selectedCarColor, "VOCÊ", this._getSelectedCarSurfaceProfile());
         }
       });
     });
@@ -198,19 +200,20 @@ class Game {
     
     // Set Weather according to track theme
     if (this.selectedTrackIdx === 1) this.weather.setWeather('snow', this.trackEngine.currentConfig);
-    else if (this.selectedTrackIdx === 2) this.weather.setWeather('rain', this.trackEngine.currentConfig);
     else this.weather.setWeather('night', this.trackEngine.currentConfig);
 
-    const weatherLabels = ['NOITE CYBER', 'NEVE', 'CHUVA NEON'];
+    const weatherLabels = ['NOITE CYBER', 'NEVE'];
     document.getElementById('hud-weather').innerText = weatherLabels[this.selectedTrackIdx] || 'NOITE CYBER';
 
     // Player & AI Spawn
-    const startPos = this.trackEngine.getPointAt(0.99);
-    const startTangent = this.trackEngine.getTangentAt(0.99);
+    // Place the player behind the bot grid at the start. Bots occupy
+    // approximately t=0.98..0.91, so t=0.88 leaves a clear rear row.
+    const startPos = this.trackEngine.getPointAt(0.88);
+    const startTangent = this.trackEngine.getTangentAt(0.88);
     const startHeading = Math.atan2(startTangent.x, startTangent.z);
 
     if (this.playerCar) this.scene.remove(this.playerCar.mesh);
-    this.playerCar = new CarEngine(this.scene, false, this.selectedCarColor, "VOCÊ");
+    this.playerCar = new CarEngine(this.scene, false, this.selectedCarColor, "VOCÊ", this._getSelectedCarSurfaceProfile());
     this.playerCar.resetPosition(startPos, startHeading);
     this.wasPlayerAirborne = false;
 
@@ -426,7 +429,10 @@ class Game {
     // Timer & Laps
     this.currentLapTime = (performance.now() - this.raceStartTime) / 1000;
     document.getElementById('hud-time').innerText = this._formatTime(this.currentLapTime);
-    document.getElementById('hud-lap').innerText = `${this.playerCar.lap} / ${this.totalLaps}`;
+    const completedLaps = this.playerCar.isFinished
+      ? this.totalLaps
+      : Math.max(0, this.playerCar.lap - 1);
+    document.getElementById('hud-lap').innerText = `${completedLaps} / ${this.totalLaps}`;
     const surfaceLabels = { asphalt: 'ASFALTO', dirt: 'TERRA', snow: 'NEVE' };
     document.getElementById('hud-surface').innerText = surfaceLabels[this.playerCar.currentSurface] || 'ASFALTO';
 
@@ -563,6 +569,18 @@ class Game {
     // always ahead of every car still on the final lap.
     if (car.isFinished) return this.totalLaps + 1;
     return Math.max(0, (car.lap || 1) - 1) + (car.trackProgressT || 0);
+  }
+
+  _getSelectedCarSurfaceProfile() {
+    const profiles = {
+      // Asphalt specialist: strongest on pavement, average on dirt, weakest on snow.
+      cannibalRed: { asphalt: 1.12, dirt: 0.72, snow: 0.38 },
+      // Dirt specialist: strongest on dirt, average on asphalt and snow.
+      sidewinderCyan: { asphalt: 0.94, dirt: 0.98, snow: 0.58 },
+      // Snow specialist: strongest on snow, average on asphalt and dirt.
+      razorYellow: { asphalt: 0.94, dirt: 0.72, snow: 0.82 }
+    };
+    return profiles[this.selectedCarProfile] || profiles.cannibalRed;
   }
 
   onWindowResize() {

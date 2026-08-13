@@ -55,23 +55,6 @@ class TrackEngine {
         skyTop: 0x3388cc,
         skyBottom: 0x88bbdd
       },
-      {
-        id: 'expressway',
-        name: 'TOKYO BAY EXPRESSWAY',
-        surfaceDefault: 'asphalt',
-        hasSpeedLimitZone: true,
-        speedLimit: 90,
-        speedLimitStart: 0.7,
-        speedLimitEnd: 0.9,
-        theme: 'coastal',
-        laps: 3,
-        groundColor: 0x1a2530,
-        roadColor: 0x4a5565,
-        rumbleColor1: 0x00f3ff,
-        rumbleColor2: 0xffffff,
-        skyTop: 0x0a1520,
-        skyBottom: 0x1a2a40
-      }
     ];
 
     this.currentConfig = this.trackConfigs[0];

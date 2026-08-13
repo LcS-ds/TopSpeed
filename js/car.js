@@ -3,11 +3,12 @@
    ========================================================================== */
 
 class CarEngine {
-  constructor(scene, isAI = false, colorHex = 0xff0055, name = "PLAYER") {
+  constructor(scene, isAI = false, colorHex = 0xff0055, name = "PLAYER", surfaceProfile = null) {
     this.scene = scene;
     this.isAI = isAI;
     this.name = name;
     this.colorHex = colorHex;
+    this.surfaceProfile = surfaceProfile;
 
     this.mesh = new THREE.Group();
     this.scene.add(this.mesh);
@@ -150,13 +151,9 @@ class CarEngine {
 
     this.currentSurface = currentSeg.surface || 'asphalt';
 
-    if (this.currentSurface === 'dirt') {
-      this.surfaceFriction = 0.75;
-    } else if (this.currentSurface === 'snow') {
-      this.surfaceFriction = 0.50;
-    } else {
-      this.surfaceFriction = 1.0;
-    }
+    const defaultSurfaceGrip = { asphalt: 1.0, dirt: 0.75, snow: 0.50 };
+    this.surfaceFriction = this.surfaceProfile?.[this.currentSurface] ??
+      defaultSurfaceGrip[this.currentSurface] ?? defaultSurfaceGrip.asphalt;
 
     const effectiveMaxSpeed = this.maxSpeed * this.surfaceFriction;
 
