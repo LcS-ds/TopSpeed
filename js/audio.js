@@ -179,6 +179,40 @@ class AudioEngine {
     osc.stop(now + 0.3);
   }
 
+  playJump() {
+    if (!this.ctx) return;
+
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(170, now);
+    osc.frequency.exponentialRampToValueAtTime(460, now + 0.18);
+    gain.gain.setValueAtTime(0.11, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.2);
+  }
+
+  playLanding(impact = 1) {
+    if (!this.ctx) return;
+
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(105, now);
+    osc.frequency.exponentialRampToValueAtTime(38, now + 0.26);
+    gain.gain.setValueAtTime(Math.min(0.22, 0.06 + impact * 0.014), now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.28);
+  }
+
   playSpeedWarning() {
     if (!this.ctx) return;
 

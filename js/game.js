@@ -24,7 +24,8 @@ class Game {
       accelerate: false,
       left: false,
       right: false,
-      brake: false
+      brake: false,
+      reverse: false
     };
 
     this.clock = new THREE.Clock();
@@ -33,6 +34,8 @@ class Game {
     this.previousPlayerT = 0; // For lap crossing detection
 
     this.minimapCtx = null;
+    this.cameraShake = 0;
+    this.wasPlayerAirborne = false;
 
     this.init();
   }
@@ -58,6 +61,7 @@ class Game {
     this.trackEngine = new TrackEngine(this.scene);
     this.playerCar = new CarEngine(this.scene, false, this.selectedCarColor, "VOCÊ");
     this.aiManager = new AIManager(this.scene);
+    this.aiManager.totalLaps = this.totalLaps;
     this.weather = new WeatherSystem(this.scene);
 
     // Minimap canvas context
@@ -89,7 +93,8 @@ class Game {
       if (e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') this.inputState.accelerate = true;
       if (e.key === 'a' || e.key === 'A' || e.key === 'ArrowLeft') this.inputState.left = true;
       if (e.key === 'd' || e.key === 'D' || e.key === 'ArrowRight') this.inputState.right = true;
-      if (e.key === 's' || e.key === 'S' || e.key === 'ArrowDown' || e.key === ' ') this.inputState.brake = true;
+      if (e.key === 's' || e.key === 'S' || e.key === 'ArrowDown') this.inputState.reverse = true;
+      if (e.key === ' ') this.inputState.brake = true;
 
       if (e.key === 'Escape' || e.key === 'p' || e.key === 'P') {
         this.togglePause();
@@ -100,7 +105,8 @@ class Game {
       if (e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') this.inputState.accelerate = false;
       if (e.key === 'a' || e.key === 'A' || e.key === 'ArrowLeft') this.inputState.left = false;
       if (e.key === 'd' || e.key === 'D' || e.key === 'ArrowRight') this.inputState.right = false;
-      if (e.key === 's' || e.key === 'S' || e.key === 'ArrowDown' || e.key === ' ') this.inputState.brake = false;
+      if (e.key === 's' || e.key === 'S' || e.key === 'ArrowDown') this.inputState.reverse = false;
+      if (e.key === ' ') this.inputState.brake = false;
     });
   }
 
@@ -169,6 +175,9 @@ class Game {
 
     const btnQuit = document.getElementById('btn-quit');
     if (btnQuit) btnQuit.addEventListener('click', () => this.showMainMenu());
+
+    const btnResetCar = document.getElementById('btn-reset-car');
+    if (btnResetCar) btnResetCar.addEventListener('click', () => this.resetPlayerCar());
   }
 
   /* --------------------------------------------------------------------------
@@ -192,6 +201,9 @@ class Game {
     else if (this.selectedTrackIdx === 2) this.weather.setWeather('rain', this.trackEngine.currentConfig);
     else this.weather.setWeather('night', this.trackEngine.currentConfig);
 
+    const weatherLabels = ['NOITE CYBER', 'NEVE', 'CHUVA NEON'];
+    document.getElementById('hud-weather').innerText = weatherLabels[this.selectedTrackIdx] || 'NOITE CYBER';
+
     // Player & AI Spawn
     const startPos = this.trackEngine.getPointAt(0.99);
     const startTangent = this.trackEngine.getTangentAt(0.99);
@@ -200,8 +212,10 @@ class Game {
     if (this.playerCar) this.scene.remove(this.playerCar.mesh);
     this.playerCar = new CarEngine(this.scene, false, this.selectedCarColor, "VOCÊ");
     this.playerCar.resetPosition(startPos, startHeading);
+    this.wasPlayerAirborne = false;
 
     this.aiManager.createBots(this.difficulty);
+    this.aiManager.totalLaps = this.totalLaps;
     this.aiManager.resetPositions(this.trackEngine);
 
     // Start Countdown
@@ -262,7 +276,7 @@ class Game {
 
     // Populate Leaderboard
     const allCars = [this.playerCar, ...this.aiManager.bots.map(b => b.car)];
-    allCars.sort((a, b) => b.trackProgressT - a.trackProgressT);
+    allCars.sort((a, b) => this._getRaceProgress(b) - this._getRaceProgress(a));
 
     const playerRank = allCars.findIndex(c => c === this.playerCar) + 1;
 
@@ -297,6 +311,11 @@ class Game {
     if (this.gameState === 'racing') {
       // 1. Update Player Physics & Audio
       this.playerCar.update(delta, this.inputState, this.trackEngine);
+      if (!this.wasPlayerAirborne && this.playerCar.airborne) this.audio.playJump();
+      if (this.wasPlayerAirborne && !this.playerCar.airborne) {
+        this.audio.playLanding(this.playerCar.lastLandingImpact || 1);
+      }
+      this.wasPlayerAirborne = this.playerCar.airborne;
       this.audio.updateEngine(this.playerCar.speed, this.playerCar.maxSpeed, this.inputState.accelerate, this.playerCar.gear);
       this.audio.updateDriftSqueal(this.playerCar.isDrifting, this.playerCar.driftIntensity);
 
@@ -338,6 +357,9 @@ class Game {
   _updateCamera() {
     const carPos = this.playerCar.mesh.position;
     const heading = this.playerCar.heading;
+    const speedRatio = Math.min(1, Math.abs(this.playerCar.speed) / this.playerCar.maxSpeed);
+    const time = performance.now() * 0.001;
+    this.cameraShake = Math.max(this.cameraShake * 0.86, this.playerCar.collisionImpact || 0);
 
     const camOffset = new THREE.Vector3(
       -Math.sin(heading) * 12,
@@ -346,6 +368,13 @@ class Game {
     );
 
     const targetCamPos = carPos.clone().add(camOffset);
+    targetCamPos.y += Math.sin(time * 3.2) * 0.09 * speedRatio;
+    targetCamPos.x += Math.cos(time * 2.4) * 0.05 * speedRatio;
+    if (this.cameraShake > 0.01) {
+      targetCamPos.x += (Math.random() - 0.5) * this.cameraShake * 0.35;
+      targetCamPos.y += (Math.random() - 0.5) * this.cameraShake * 0.26;
+      targetCamPos.z += (Math.random() - 0.5) * this.cameraShake * 0.2;
+    }
     this.camera.position.lerp(targetCamPos, 0.15);
 
     const lookTarget = carPos.clone().add(new THREE.Vector3(
@@ -356,17 +385,28 @@ class Game {
     this.camera.lookAt(lookTarget);
   }
 
+  resetPlayerCar() {
+    if (!this.playerCar || !this.trackEngine) return;
+    const progress = this.trackEngine.getTrackProgress(this.playerCar.mesh.position);
+    const safeT = (progress.t + 0.006) % 1;
+    const position = this.trackEngine.getPointAt(safeT);
+    const tangent = this.trackEngine.getTangentAt(safeT);
+    this.playerCar.resetPosition(position, Math.atan2(tangent.x, tangent.z));
+    this.playerCar.airborne = false;
+    this.playerCar.verticalVelocity = 0;
+  }
+
   /* --------------------------------------------------------------------------
      HUD Dashboard & Tachometer Updates
      -------------------------------------------------------------------------- */
   _updateHUD() {
-    const speed = Math.floor(this.playerCar.speed);
+    const speed = Math.floor(Math.abs(this.playerCar.speed));
     document.getElementById('dash-speed').innerText = speed;
     document.getElementById('dash-gear').innerText = this.playerCar.gear;
 
-    // Tachometer Needle Rotation (-110deg to 110deg)
+    // Keep the needle within the visible gauge arc.
     const rpmRatio = (this.playerCar.rpm - 1000) / 7000;
-    const needleDeg = -110 + Math.min(1.0, Math.max(0, rpmRatio)) * 220;
+    const needleDeg = -82 + Math.min(1.0, Math.max(0, rpmRatio)) * 164;
     const needle = document.getElementById('gauge-needle');
     if (needle) needle.style.transform = `translateX(-50%) rotate(${needleDeg}deg)`;
 
@@ -379,7 +419,7 @@ class Game {
 
     // Position ranking
     const allCars = [this.playerCar, ...this.aiManager.bots.map(b => b.car)];
-    allCars.sort((a, b) => b.trackProgressT - a.trackProgressT);
+    allCars.sort((a, b) => this._getRaceProgress(b) - this._getRaceProgress(a));
     const rank = allCars.findIndex(c => c === this.playerCar) + 1;
     document.getElementById('hud-position').innerHTML = `${rank}<sup>${this._getRankSuffix(rank)}</sup><small>/8</small>`;
 
@@ -387,7 +427,31 @@ class Game {
     this.currentLapTime = (performance.now() - this.raceStartTime) / 1000;
     document.getElementById('hud-time').innerText = this._formatTime(this.currentLapTime);
     document.getElementById('hud-lap').innerText = `${this.playerCar.lap} / ${this.totalLaps}`;
-    document.getElementById('hud-surface').innerText = this.playerCar.currentSurface.toUpperCase();
+    const surfaceLabels = { asphalt: 'ASFALTO', dirt: 'TERRA', snow: 'NEVE' };
+    document.getElementById('hud-surface').innerText = surfaceLabels[this.playerCar.currentSurface] || 'ASFALTO';
+
+    // Warn the player about the nearest racer using distance along the circuit.
+    const rivalAlert = document.getElementById('rival-alert');
+    const rivalText = document.getElementById('rival-alert-text');
+    if (rivalAlert && rivalText) {
+      let closest = null;
+      this.aiManager.bots.forEach(bot => {
+        const rival = bot.car;
+        const aheadGap = (rival.trackProgressT - this.playerCar.trackProgressT + 1) % 1;
+        const behindGap = (this.playerCar.trackProgressT - rival.trackProgressT + 1) % 1;
+        const gap = Math.min(aheadGap, behindGap);
+        if (gap > 0.001 && (!closest || gap < closest.gap)) {
+          closest = { rival, gap, ahead: aheadGap < behindGap };
+        }
+      });
+      if (closest && closest.gap < 0.026) {
+        rivalText.innerText = closest.ahead ? `RIVAL À FRENTE: ${closest.rival.name}` : `RIVAL NA RETAGUARDA: ${closest.rival.name}`;
+        rivalAlert.classList.toggle('behind', !closest.ahead);
+        rivalAlert.classList.remove('hidden');
+      } else {
+        rivalAlert.classList.add('hidden');
+      }
+    }
   }
 
   _checkSpeedLimit() {
@@ -491,6 +555,14 @@ class Game {
     if (rank === 2) return 'ND';
     if (rank === 3) return 'RD';
     return 'TH';
+  }
+
+  _getRaceProgress(car) {
+    // `lap` is the human-facing lap number (starts at 1), while race
+    // progress needs completed laps. A car that crossed the finish line is
+    // always ahead of every car still on the final lap.
+    if (car.isFinished) return this.totalLaps + 1;
+    return Math.max(0, (car.lap || 1) - 1) + (car.trackProgressT || 0);
   }
 
   onWindowResize() {

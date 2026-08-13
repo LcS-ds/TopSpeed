@@ -22,6 +22,8 @@ class CarEngine {
     this.acceleration = 90; // km/h per second
     this.decelerationCoasting = 25; // km/h per second natural coasting
     this.brakeForce = 120; // km/h per second brake
+    this.reverseAcceleration = 55;
+    this.reverseMaxSpeed = 45;
 
     this.steeringAngle = 0;
     this.maxSteerAngle = 0.015; // Reduced sensitivity
@@ -40,6 +42,13 @@ class CarEngine {
     this.lapStartTime = 0;
     this.totalRaceTime = 0;
     this.isFinished = false;
+    this.trailMeshes = [];
+    this.trailTimer = 0;
+    this.airborne = false;
+    this.verticalVelocity = 0;
+    this.jumpCooldown = 0;
+    this.collisionImpact = 0;
+    this.lastLandingImpact = 0;
 
     this._buildCarMesh();
   }
@@ -153,9 +162,18 @@ class CarEngine {
 
     // 2. Acceleration (W key or AI input)
     if (inputState.accelerate) {
-      this.speed += this.acceleration * this.surfaceFriction * delta;
-      if (this.speed > effectiveMaxSpeed) {
-        this.speed = effectiveMaxSpeed;
+      if (this.speed < 0) {
+        this.speed = Math.min(0, this.speed + this.brakeForce * delta);
+      } else {
+        this.speed += this.acceleration * this.surfaceFriction * delta;
+        if (this.speed > effectiveMaxSpeed) this.speed = effectiveMaxSpeed;
+      }
+    } else if (inputState.reverse) {
+      if (this.speed > 0) {
+        this.speed = Math.max(0, this.speed - this.brakeForce * delta);
+      } else {
+        this.speed -= this.reverseAcceleration * delta;
+        if (this.speed < -this.reverseMaxSpeed) this.speed = -this.reverseMaxSpeed;
       }
     } else if (inputState.brake) {
       // Braking (S or Space)
@@ -176,7 +194,7 @@ class CarEngine {
     const speedRatio = this.speed / this.maxSpeed;
     const currentSteerFactor = this.maxSteerAngle * (1 - speedRatio * 0.4);
 
-    if (steerInput !== 0 && this.speed > 5) {
+    if (steerInput !== 0 && Math.abs(this.speed) > 5) {
       this.heading += steerInput * currentSteerFactor * (this.speed / 40);
     }
 
@@ -190,14 +208,15 @@ class CarEngine {
     }
 
     // 5. Gear & RPM Calculation
-    if (this.speed < 35) this.gear = 1;
+    if (this.speed < -1) this.gear = 'R';
+    else if (this.speed < 35) this.gear = 1;
     else if (this.speed < 75) this.gear = 2;
     else if (this.speed < 115) this.gear = 3;
     else if (this.speed < 155) this.gear = 4;
     else if (this.speed < 195) this.gear = 5;
     else this.gear = 6;
 
-    this.rpm = 1000 + (this.speed % 40) * 150 + (inputState.accelerate ? 500 : 0);
+    this.rpm = 1000 + (Math.abs(this.speed) % 40) * 150 + (inputState.accelerate ? 500 : 0);
 
     // 6. Update 3D Position & Mesh Orientation
     const moveDistance = (this.speed * 1000 / 3600) * delta; // Convert km/h to m/s
@@ -208,6 +227,60 @@ class CarEngine {
     );
 
     this.mesh.position.add(forwardVec.multiplyScalar(moveDistance));
+
+    // Keep every vehicle seated on the sampled track elevation.  This makes
+    // the player and AI climb and descend together on Fuji's raised sections.
+    const updatedProgress = trackEngine.getTrackProgress(this.mesh.position);
+    const roadTangent = updatedProgress.segment.tangent;
+    const horizontalLength = Math.sqrt(roadTangent.x * roadTangent.x + roadTangent.z * roadTangent.z);
+    this.jumpCooldown = Math.max(0, this.jumpCooldown - delta);
+    var roadHeight = updatedProgress.segment.point.y;
+    if (this.airborne) {
+      this.verticalVelocity -= 19 * delta;
+      this.mesh.position.y += this.verticalVelocity * delta;
+      if (this.mesh.position.y <= roadHeight) {
+        this.lastLandingImpact = Math.abs(this.verticalVelocity);
+        this.mesh.position.y = roadHeight;
+        this.airborne = false;
+        this.verticalVelocity = 0;
+      }
+    } else {
+      var jump = trackEngine.getJumpAt(this.mesh.position);
+      if (jump && this.speed > 70 && this.jumpCooldown <= 0) {
+        this.airborne = true;
+        this.verticalVelocity = 6 + this.speed * 0.025;
+        this.jumpCooldown = 1.4;
+      }
+      this.mesh.position.y = roadHeight;
+    }
+    this.mesh.rotation.x = -Math.atan2(roadTangent.y, horizontalLength);
+
+    // Only the player is constrained by the off-track boundary. Bots have no
+    // invisible wall here, so they can take a wider escape line around a
+    // barrier and recover naturally instead of getting pinned against it.
+    var roadLimit = trackEngine.trackWidth / 2 + 4.5;
+    if (!this.isAI && Math.abs(updatedProgress.lateralOffset) > roadLimit) {
+      var side = updatedProgress.lateralOffset < 0 ? -1 : 1;
+      this.mesh.position.copy(updatedProgress.segment.point)
+        .add(updatedProgress.segment.normal.clone().multiplyScalar(side * roadLimit));
+      this.speed *= 0.42;
+      this.isDrifting = false;
+      this.collisionImpact = Math.max(this.collisionImpact, 0.7);
+    }
+
+    var obstacle = trackEngine.getObstacleCollision(this.mesh.position, 0.55);
+    if (obstacle) {
+      var away = this.mesh.position.clone().sub(obstacle.position);
+      away.y = 0;
+      if (away.lengthSq() < 0.01) away.copy(updatedProgress.segment.normal);
+      away.normalize();
+      this.mesh.position.add(away.multiplyScalar(0.75));
+      this.speed *= 0.5;
+      this.collisionImpact = Math.max(this.collisionImpact, 1);
+    }
+
+    this._leaveSurfaceTrail(delta, updatedProgress);
+
     this.mesh.rotation.y = this.heading;
 
     // Tilt mesh slightly when turning/drifting for arcade visual dynamism
@@ -217,6 +290,41 @@ class CarEngine {
     this.wheels.forEach(w => {
       w.rotation.x += moveDistance * 0.8;
     });
+    this.collisionImpact = Math.max(0, this.collisionImpact - delta * 2.8);
+  }
+
+  _leaveSurfaceTrail(delta, progress) {
+    if (this.isAI || this.speed < 25) return;
+    if (this.currentSurface === 'asphalt' && !this.isDrifting) return;
+
+    this.trailTimer += delta;
+    if (this.trailTimer < 0.12) return;
+    this.trailTimer = 0;
+
+    var colors = { asphalt: 0x242424, dirt: 0x75401d, snow: 0xdff8ff };
+    var mark = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.4, 3.2),
+      new THREE.MeshBasicMaterial({
+        color: colors[this.currentSurface] || 0x444444,
+        transparent: true,
+        opacity: this.currentSurface === 'snow' ? 0.38 : 0.5,
+        side: THREE.DoubleSide
+      })
+    );
+    var behind = new THREE.Vector3(-Math.sin(this.heading) * 1.8, 0, -Math.cos(this.heading) * 1.8);
+    mark.position.copy(this.mesh.position).add(behind);
+    mark.position.y = progress.segment.point.y + 0.09;
+    mark.rotation.x = -Math.PI / 2;
+    mark.rotation.z = -this.heading;
+    this.scene.add(mark);
+    this.trailMeshes.push(mark);
+
+    if (this.trailMeshes.length > 48) {
+      var oldMark = this.trailMeshes.shift();
+      this.scene.remove(oldMark);
+      oldMark.geometry.dispose();
+      oldMark.material.dispose();
+    }
   }
 
   resetPosition(startPos, heading = 0) {
@@ -224,6 +332,10 @@ class CarEngine {
     this.heading = heading;
     this.mesh.rotation.y = heading;
     this.speed = 0;
+    this.airborne = false;
+    this.verticalVelocity = 0;
+    this.jumpCooldown = 0;
+    this.lastLandingImpact = 0;
     this.lap = 1;
     this.isFinished = false;
   }

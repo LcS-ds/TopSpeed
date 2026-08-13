@@ -62,6 +62,13 @@ class WeatherSystem {
       this.scene.background = new THREE.Color(trackConfig.skyTop);
     }
 
+    // Atmospheric depth blends distant buildings and terrain into the sky.
+    this.scene.fog = new THREE.Fog(
+      mode === 'snow' ? 0xb5c9dc : (mode === 'rain' ? 0x18283a : 0x10152a),
+      mode === 'snow' ? 95 : 150,
+      mode === 'snow' ? 480 : 760
+    );
+
     if (mode === 'rain') {
       this._createRain();
       this.ambientLight.color.setHex(0x334455);
@@ -124,7 +131,7 @@ class WeatherSystem {
   }
 
   _createSnow() {
-    var count = 2500;
+    var count = 1700;
     var geo = new THREE.BufferGeometry();
     var pos = new Float32Array(count * 3);
 
@@ -138,9 +145,9 @@ class WeatherSystem {
 
     var mat = new THREE.PointsMaterial({
       color: 0xeeeeff,
-      size: 0.6,
+      size: 0.24,
       transparent: true,
-      opacity: 0.8,
+      opacity: 0.7,
       sizeAttenuation: true
     });
 

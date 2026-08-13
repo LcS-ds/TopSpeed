@@ -57,6 +57,10 @@
           <div id="alert-body" class="alert-body">LIMITE DE VELOCIDADE: 80 KM/H</div>
         </div>
 
+        <div id="rival-alert" class="rival-alert hidden" aria-live="polite">
+          <span id="rival-alert-text">RIVAL À FRENTE</span>
+        </div>
+
         <div id="race-countdown" class="race-countdown hidden">3</div>
 
         <!-- Minimap & Curve Radar -->
@@ -95,7 +99,8 @@
           <div class="hud-controls-hint">
             <div class="key-badge">W</div> Acelerar
             <div class="key-badge">A</div>/<div class="key-badge">D</div> Virar
-            <div class="key-badge">S</div>/ESPAÇO Freio/Drift
+            <div class="key-badge">S</div> Ré <div class="key-badge">ESPAÇO</div> Freio/Drift
+            <button type="button" id="btn-reset-car" class="hud-reset-button">RESETAR CARRO</button>
           </div>
         </div>
       </div>
