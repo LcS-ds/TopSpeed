@@ -43,6 +43,10 @@ class CarEngine {
     this.lapStartTime = 0;
     this.totalRaceTime = 0;
     this.isFinished = false;
+    this.finishTime = null;
+    this.finishPosition = null;
+    this.speedMultiplier = 1;
+    this.maxSpeedMultiplier = 1;
     this.trailMeshes = [];
     this.trailTimer = 0;
     this.airborne = false;
@@ -145,7 +149,7 @@ class CarEngine {
     if (this.isFinished) return;
 
     // 1. Check current track surface & friction
-    const trackProgress = trackEngine.getTrackProgress(this.mesh.position);
+    const trackProgress = trackEngine.getTrackProgress(this.mesh.position, this.trackProgressT);
     this.trackProgressT = trackProgress.t;
     const currentSeg = trackProgress.segment;
 
@@ -155,14 +159,14 @@ class CarEngine {
     this.surfaceFriction = this.surfaceProfile?.[this.currentSurface] ??
       defaultSurfaceGrip[this.currentSurface] ?? defaultSurfaceGrip.asphalt;
 
-    const effectiveMaxSpeed = this.maxSpeed * this.surfaceFriction;
+    const effectiveMaxSpeed = this.maxSpeed * this.surfaceFriction * this.maxSpeedMultiplier;
 
     // 2. Acceleration (W key or AI input)
     if (inputState.accelerate) {
       if (this.speed < 0) {
         this.speed = Math.min(0, this.speed + this.brakeForce * delta);
       } else {
-        this.speed += this.acceleration * this.surfaceFriction * delta;
+        this.speed += this.acceleration * this.surfaceFriction * this.speedMultiplier * delta;
         if (this.speed > effectiveMaxSpeed) this.speed = effectiveMaxSpeed;
       }
     } else if (inputState.reverse) {
@@ -192,7 +196,10 @@ class CarEngine {
     const currentSteerFactor = this.maxSteerAngle * (1 - speedRatio * 0.4);
 
     if (steerInput !== 0 && Math.abs(this.speed) > 5) {
-      this.heading += steerInput * currentSteerFactor * (this.speed / 40);
+      // The legacy value was tuned per frame at 60 FPS. Multiplying by the
+      // reference frame rate preserves that feeling while making angular
+      // velocity deterministic at 30/60/120 FPS.
+      this.heading += steerInput * currentSteerFactor * (this.speed / 40) * delta * 60;
     }
 
     // 4. Drift Mechanics (Brake/Handbrake turned in high speed)
@@ -227,7 +234,7 @@ class CarEngine {
 
     // Keep every vehicle seated on the sampled track elevation.  This makes
     // the player and AI climb and descend together on Fuji's raised sections.
-    const updatedProgress = trackEngine.getTrackProgress(this.mesh.position);
+    const updatedProgress = trackEngine.getTrackProgress(this.mesh.position, this.trackProgressT);
     const roadTangent = updatedProgress.segment.tangent;
     const horizontalLength = Math.sqrt(roadTangent.x * roadTangent.x + roadTangent.z * roadTangent.z);
     this.jumpCooldown = Math.max(0, this.jumpCooldown - delta);
@@ -333,7 +340,45 @@ class CarEngine {
     this.verticalVelocity = 0;
     this.jumpCooldown = 0;
     this.lastLandingImpact = 0;
+    this.trackProgressT = null;
+    this.isDrifting = false;
+    this.driftIntensity = 0;
+    this.collisionImpact = 0;
+    this.rpm = 1000;
+    this.steeringAngle = 0;
+    this.speedMultiplier = 1;
+    this.maxSpeedMultiplier = 1;
     this.lap = 1;
     this.isFinished = false;
+    this.finishTime = null;
+    this.finishPosition = null;
+    this.trailTimer = 0;
+  }
+
+  dispose() {
+    // Cars own their generated meshes/materials. Dispose recursively so
+    // restarting or switching vehicles does not keep old GPU allocations.
+    this.mesh.traverse(obj => {
+      if (obj.geometry && typeof obj.geometry.dispose === 'function') obj.geometry.dispose();
+      if (!obj.material) return;
+      const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+      materials.forEach(material => {
+        // No car currently uses texture maps, but dispose exclusive maps if
+        // one is added later without touching shared asset textures.
+        if (material.userData && material.userData.ownedTexture && material.map) {
+          material.map.dispose();
+        }
+        if (typeof material.dispose === 'function') material.dispose();
+      });
+    });
+    this.trailMeshes.forEach(mark => {
+      this.scene.remove(mark);
+      if (mark.geometry) mark.geometry.dispose();
+      if (mark.material) {
+        const materials = Array.isArray(mark.material) ? mark.material : [mark.material];
+        materials.forEach(material => material.dispose && material.dispose());
+      }
+    });
+    this.trailMeshes.length = 0;
   }
 }

@@ -20,6 +20,7 @@ class Game {
     this.selectedCarProfile = 'cannibalRed';
     this.totalLaps = 3;
     this.difficulty = 'medium';
+    this.musicEnabled = true;
 
     this.inputState = {
       accelerate: false,
@@ -33,6 +34,9 @@ class Game {
     this.raceStartTime = 0;
     this.currentLapTime = 0;
     this.previousPlayerT = 0; // For lap crossing detection
+    this.finishOrder = [];
+    this.totalRacers = 1;
+    this.hud = {};
 
     this.minimapCtx = null;
     this.cameraShake = 0;
@@ -68,6 +72,28 @@ class Game {
     // Minimap canvas context
     const minimapCanvas = document.getElementById('minimap-canvas');
     if (minimapCanvas) this.minimapCtx = minimapCanvas.getContext('2d');
+    this.hud = {
+      speed: document.getElementById('dash-speed'),
+      gear: document.getElementById('dash-gear'),
+      needle: document.getElementById('gauge-needle'),
+      rpmPath: document.getElementById('gauge-rpm-path'),
+      position: document.getElementById('hud-position'),
+      time: document.getElementById('hud-time'),
+      lap: document.getElementById('hud-lap'),
+      surface: document.getElementById('hud-surface'),
+      weather: document.getElementById('hud-weather'),
+      centerAlert: document.getElementById('center-alert'),
+      alertBody: document.getElementById('alert-body'),
+      rivalAlert: document.getElementById('rival-alert'),
+      rivalText: document.getElementById('rival-alert-text'),
+      countdown: document.getElementById('race-countdown'),
+      finalPosition: document.getElementById('final-position-text'),
+      finalTime: document.getElementById('final-time-text'),
+      resultsMenu: document.getElementById('results-menu'),
+      leaderboardBody: document.getElementById('leaderboard-body')
+    };
+    this.aiManager.getRaceProgress = car => this._getRaceProgress(car);
+    this.aiManager.onFinish = car => this._registerFinish(car);
 
     // 3. Event Listeners & UI Binding
     this._bindEvents();
@@ -126,8 +152,7 @@ class Game {
         
         // Preview track in background scene
         this.trackEngine.loadTrack(this.selectedTrackIdx);
-        if (this.selectedTrackIdx === 1) this.weather.setWeather('snow', this.trackEngine.currentConfig);
-        else this.weather.setWeather('night', this.trackEngine.currentConfig);
+        this.weather.setWeather(this._weatherForTrack(this.selectedTrackIdx), this.trackEngine.currentConfig);
       });
     });
 
@@ -146,6 +171,7 @@ class Game {
 
         // Update player car preview color
         if (this.playerCar) {
+          this.playerCar.dispose();
           this.scene.remove(this.playerCar.mesh);
           this.playerCar = new CarEngine(this.scene, false, this.selectedCarColor, "VOCÊ", this._getSelectedCarSurfaceProfile());
         }
@@ -160,6 +186,14 @@ class Game {
     const lapsSelect = document.getElementById('select-laps');
     if (lapsSelect) {
       lapsSelect.addEventListener('change', (e) => this.totalLaps = parseInt(e.target.value));
+    }
+    const musicSelect = document.getElementById('select-music');
+    if (musicSelect) {
+      musicSelect.addEventListener('change', (e) => {
+        this.musicEnabled = e.target.value === 'on';
+        this.audio.setMusicEnabled(this.musicEnabled);
+        if (this.musicEnabled && this.gameState === 'racing') this.audio.startMusic();
+      });
     }
 
     // Start & Restart Buttons
@@ -188,6 +222,7 @@ class Game {
   startRace() {
     this.audio.init();
     this.audio.resume();
+    this.audio.setMusicEnabled(this.musicEnabled);
 
     // Hide Menus & Show HUD
     document.getElementById('main-menu').classList.add('hidden');
@@ -199,11 +234,10 @@ class Game {
     this.trackEngine.loadTrack(this.selectedTrackIdx);
     
     // Set Weather according to track theme
-    if (this.selectedTrackIdx === 1) this.weather.setWeather('snow', this.trackEngine.currentConfig);
-    else this.weather.setWeather('night', this.trackEngine.currentConfig);
+    this.weather.setWeather(this._weatherForTrack(this.selectedTrackIdx), this.trackEngine.currentConfig);
 
-    const weatherLabels = ['NOITE CYBER', 'NEVE'];
-    document.getElementById('hud-weather').innerText = weatherLabels[this.selectedTrackIdx] || 'NOITE CYBER';
+    const weatherLabels = ['NOITE CYBER', 'NEVE', 'CHUVA NEON'];
+    if (this.hud.weather) this.hud.weather.innerText = weatherLabels[this.selectedTrackIdx] || 'NOITE CYBER';
 
     // Player & AI Spawn
     // Place the player behind the bot grid at the start. Bots occupy
@@ -212,7 +246,10 @@ class Game {
     const startTangent = this.trackEngine.getTangentAt(0.88);
     const startHeading = Math.atan2(startTangent.x, startTangent.z);
 
-    if (this.playerCar) this.scene.remove(this.playerCar.mesh);
+    if (this.playerCar) {
+      this.playerCar.dispose();
+      this.scene.remove(this.playerCar.mesh);
+    }
     this.playerCar = new CarEngine(this.scene, false, this.selectedCarColor, "VOCÊ", this._getSelectedCarSurfaceProfile());
     this.playerCar.resetPosition(startPos, startHeading);
     this.wasPlayerAirborne = false;
@@ -220,6 +257,11 @@ class Game {
     this.aiManager.createBots(this.difficulty);
     this.aiManager.totalLaps = this.totalLaps;
     this.aiManager.resetPositions(this.trackEngine);
+    this.totalRacers = this.aiManager.bots.length + 1;
+    this.finishOrder = [];
+    this.previousPlayerT = 0.88;
+    this.currentLapTime = 0;
+    Object.keys(this.inputState).forEach(key => { this.inputState[key] = false; });
 
     // Start Countdown
     this.gameState = 'countdown';
@@ -274,19 +316,22 @@ class Game {
   }
 
   finishRace() {
+    if (this.gameState === 'results') return;
+    if (!this.playerCar.isFinished) this._registerFinish(this.playerCar);
     this.gameState = 'results';
     this.audio.stopMusic();
 
-    // Populate Leaderboard
-    const allCars = [this.playerCar, ...this.aiManager.bots.map(b => b.car)];
-    allCars.sort((a, b) => this._getRaceProgress(b) - this._getRaceProgress(a));
+    // Finished cars are ordered by the immutable arrival registration. Cars
+    // still racing are shown by their real progress and receive DNF.
+    const allCars = this._getRaceStandings();
 
     const playerRank = allCars.findIndex(c => c === this.playerCar) + 1;
 
-    document.getElementById('final-position-text').innerText = `${playerRank}º LUGAR`;
-    document.getElementById('final-time-text').innerText = `Tempo Total: ${this._formatTime(this.currentLapTime)}`;
+    if (this.hud.finalPosition) this.hud.finalPosition.innerText = `${playerRank}º LUGAR`;
+    if (this.hud.finalTime) this.hud.finalTime.innerText = `Tempo Total: ${this._formatTime(this.playerCar.finishTime || this.currentLapTime)}`;
 
-    const tbody = document.getElementById('leaderboard-body');
+    const tbody = this.hud.leaderboardBody;
+    if (!tbody) return;
     tbody.innerHTML = '';
     allCars.forEach((c, idx) => {
       const row = document.createElement('tr');
@@ -295,12 +340,12 @@ class Game {
         <td>${idx + 1}º</td>
         <td>${c.name}</td>
         <td>${c.name === 'VOCÊ' ? 'SEU CARRO' : 'MODEL-X'}</td>
-        <td>${this._formatTime(this.currentLapTime + idx * 1.5)}</td>
+        <td>${c.finishTime == null ? 'DNF' : this._formatTime(c.finishTime)}</td>
       `;
       tbody.appendChild(row);
     });
 
-    document.getElementById('results-menu').classList.remove('hidden');
+    if (this.hud.resultsMenu) this.hud.resultsMenu.classList.remove('hidden');
   }
 
   /* --------------------------------------------------------------------------
@@ -390,13 +435,20 @@ class Game {
 
   resetPlayerCar() {
     if (!this.playerCar || !this.trackEngine) return;
-    const progress = this.trackEngine.getTrackProgress(this.playerCar.mesh.position);
+    const progress = this.trackEngine.getTrackProgress(this.playerCar.mesh.position, this.playerCar.trackProgressT);
     const safeT = (progress.t + 0.006) % 1;
     const position = this.trackEngine.getPointAt(safeT);
     const tangent = this.trackEngine.getTangentAt(safeT);
+    const lapBeforeReset = this.playerCar.lap;
     this.playerCar.resetPosition(position, Math.atan2(tangent.x, tangent.z));
+    this.playerCar.lap = lapBeforeReset;
     this.playerCar.airborne = false;
     this.playerCar.verticalVelocity = 0;
+    this.playerCar.trackProgressT = safeT;
+    this.playerCar.collisionImpact = 0;
+    this.cameraShake = 0;
+    this.wasPlayerAirborne = false;
+    Object.keys(this.inputState).forEach(key => { this.inputState[key] = false; });
   }
 
   /* --------------------------------------------------------------------------
@@ -404,47 +456,45 @@ class Game {
      -------------------------------------------------------------------------- */
   _updateHUD() {
     const speed = Math.floor(Math.abs(this.playerCar.speed));
-    document.getElementById('dash-speed').innerText = speed;
-    document.getElementById('dash-gear').innerText = this.playerCar.gear;
+    if (this.hud.speed) this.hud.speed.innerText = speed;
+    if (this.hud.gear) this.hud.gear.innerText = this.playerCar.gear;
 
     // Keep the needle within the visible gauge arc.
     const rpmRatio = (this.playerCar.rpm - 1000) / 7000;
     const needleDeg = -82 + Math.min(1.0, Math.max(0, rpmRatio)) * 164;
-    const needle = document.getElementById('gauge-needle');
-    if (needle) needle.style.transform = `translateX(-50%) rotate(${needleDeg}deg)`;
+    if (this.hud.needle) this.hud.needle.style.transform = `translateX(-50%) rotate(${needleDeg}deg)`;
 
     // RPM Arc dashoffset
-    const rpmPath = document.getElementById('gauge-rpm-path');
-    if (rpmPath) {
+    if (this.hud.rpmPath) {
       const offset = 251 - Math.min(1.0, Math.max(0, rpmRatio)) * 251;
-      rpmPath.style.strokeDashoffset = offset;
+      this.hud.rpmPath.style.strokeDashoffset = offset;
     }
 
     // Position ranking
-    const allCars = [this.playerCar, ...this.aiManager.bots.map(b => b.car)];
-    allCars.sort((a, b) => this._getRaceProgress(b) - this._getRaceProgress(a));
+    const allCars = this._getRaceStandings();
     const rank = allCars.findIndex(c => c === this.playerCar) + 1;
-    document.getElementById('hud-position').innerHTML = `${rank}<sup>${this._getRankSuffix(rank)}</sup><small>/8</small>`;
+    if (this.hud.position) this.hud.position.innerHTML = `${rank}<sup>${this._getRankSuffix(rank)}</sup><small>/${this.totalRacers}</small>`;
 
     // Timer & Laps
     this.currentLapTime = (performance.now() - this.raceStartTime) / 1000;
-    document.getElementById('hud-time').innerText = this._formatTime(this.currentLapTime);
+    if (this.hud.time) this.hud.time.innerText = this._formatTime(this.currentLapTime);
     const completedLaps = this.playerCar.isFinished
       ? this.totalLaps
       : Math.max(0, this.playerCar.lap - 1);
-    document.getElementById('hud-lap').innerText = `${completedLaps} / ${this.totalLaps}`;
+    if (this.hud.lap) this.hud.lap.innerText = `${completedLaps} / ${this.totalLaps}`;
     const surfaceLabels = { asphalt: 'ASFALTO', dirt: 'TERRA', snow: 'NEVE' };
-    document.getElementById('hud-surface').innerText = surfaceLabels[this.playerCar.currentSurface] || 'ASFALTO';
+    if (this.hud.surface) this.hud.surface.innerText = surfaceLabels[this.playerCar.currentSurface] || 'ASFALTO';
 
     // Warn the player about the nearest racer using distance along the circuit.
-    const rivalAlert = document.getElementById('rival-alert');
-    const rivalText = document.getElementById('rival-alert-text');
+    const rivalAlert = this.hud.rivalAlert;
+    const rivalText = this.hud.rivalText;
     if (rivalAlert && rivalText) {
       let closest = null;
       this.aiManager.bots.forEach(bot => {
         const rival = bot.car;
-        const aheadGap = (rival.trackProgressT - this.playerCar.trackProgressT + 1) % 1;
-        const behindGap = (this.playerCar.trackProgressT - rival.trackProgressT + 1) % 1;
+        const signedGap = this._getRaceProgress(rival) - this._getRaceProgress(this.playerCar);
+        const aheadGap = signedGap > 0 ? signedGap : Infinity;
+        const behindGap = signedGap < 0 ? -signedGap : Infinity;
         const gap = Math.min(aheadGap, behindGap);
         if (gap > 0.001 && (!closest || gap < closest.gap)) {
           closest = { rival, gap, ahead: aheadGap < behindGap };
@@ -461,13 +511,15 @@ class Game {
   }
 
   _checkSpeedLimit() {
-    const progress = this.trackEngine.getTrackProgress(this.playerCar.mesh.position);
+    const progress = this.trackEngine.getTrackProgress(this.playerCar.mesh.position, this.playerCar.trackProgressT);
     const seg = progress.segment;
-    const alertBox = document.getElementById('center-alert');
+    const alertBox = this.hud.centerAlert;
+    if (!alertBox) return;
 
     if (seg.isSpeedLimit) {
       alertBox.classList.remove('hidden');
       const limit = this.trackEngine.currentConfig.speedLimit || 80;
+      if (this.hud.alertBody) this.hud.alertBody.innerText = `LIMITE DE VELOCIDADE: ${limit} KM/H`;
       if (this.playerCar.speed > limit) {
         this.audio.playSpeedWarning();
       }
@@ -492,7 +544,7 @@ class Game {
         // Check if race is complete
         if (this.playerCar.lap > this.totalLaps) {
           this.playerCar.lap = this.totalLaps;
-          this.playerCar.isFinished = true;
+          this._registerFinish(this.playerCar);
           this.finishRace();
           return;
         }
@@ -552,8 +604,8 @@ class Game {
   _formatTime(seconds) {
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
-    const ms = Math.floor((seconds % 1) * 100);
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
+    const ms = Math.floor((seconds % 1) * 1000);
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
   }
 
   _getRankSuffix(rank) {
@@ -567,8 +619,36 @@ class Game {
     // `lap` is the human-facing lap number (starts at 1), while race
     // progress needs completed laps. A car that crossed the finish line is
     // always ahead of every car still on the final lap.
-    if (car.isFinished) return this.totalLaps + 1;
+    if (car.isFinished) {
+      // Keep completed vehicles strictly ordered by their immutable arrival.
+      const tieBreaker = car.finishPosition ? (this.totalRacers - car.finishPosition) * 0.0001 : 0;
+      return this.totalLaps + 1 + tieBreaker;
+    }
     return Math.max(0, (car.lap || 1) - 1) + (car.trackProgressT || 0);
+  }
+
+  _getRaceStandings() {
+    const allCars = [this.playerCar, ...this.aiManager.bots.map(bot => bot.car)];
+    return allCars.sort((a, b) => {
+      if (a.isFinished && b.isFinished) return (a.finishPosition || Infinity) - (b.finishPosition || Infinity);
+      if (a.isFinished) return -1;
+      if (b.isFinished) return 1;
+      return this._getRaceProgress(b) - this._getRaceProgress(a);
+    });
+  }
+
+  _registerFinish(car) {
+    if (!car || car.finishTime != null) return;
+    car.isFinished = true;
+    car.finishTime = Math.max(0, (performance.now() - this.raceStartTime) / 1000);
+    car.finishPosition = this.finishOrder.length + 1;
+    this.finishOrder.push(car);
+  }
+
+  _weatherForTrack(trackIdx) {
+    if (trackIdx === 1) return 'snow';
+    if (trackIdx === 2) return 'rain';
+    return 'night';
   }
 
   _getSelectedCarSurfaceProfile() {

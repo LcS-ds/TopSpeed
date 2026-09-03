@@ -24,6 +24,7 @@ class AudioEngine {
     this.musicTimer = null;
     this.musicStep = 0;
     this.isPlayingMusic = false;
+    this.musicEnabled = true;
 
     // Gear ratios for engine audio synthesis
     this.gearMaxSpeeds = [40, 80, 120, 160, 200, 240];
@@ -258,7 +259,7 @@ class AudioEngine {
      Procedural Synthwave Music Generator
      -------------------------------------------------------------------------- */
   startMusic() {
-    if (!this.ctx || this.isPlayingMusic) return;
+    if (!this.ctx || !this.musicEnabled || this.isPlayingMusic) return;
     this.isPlayingMusic = true;
     this.musicStep = 0;
 
@@ -352,6 +353,11 @@ class AudioEngine {
       clearTimeout(this.musicTimer);
       this.musicTimer = null;
     }
+  }
+
+  setMusicEnabled(enabled) {
+    this.musicEnabled = Boolean(enabled);
+    if (!this.musicEnabled) this.stopMusic();
   }
 
   stopEngine() {

@@ -55,30 +55,55 @@ class TrackEngine {
         skyTop: 0x3388cc,
         skyBottom: 0x88bbdd
       },
+      {
+        id: 'coastal',
+        name: 'TOKYO BAY COASTAL RUN',
+        surfaceDefault: 'asphalt',
+        surfaceSegments: [
+          { start: 0.28, end: 0.43, type: 'dirt' },
+          { start: 0.68, end: 0.82, type: 'asphalt' }
+        ],
+        hasSpeedLimitZone: true,
+        speedLimit: 100,
+        speedLimitStart: 0.08,
+        speedLimitEnd: 0.20,
+        width: 28,
+        difficulty: 'medium',
+        climate: 'rain',
+        scenery: 'coastal-city',
+        theme: 'coastal',
+        laps: 3,
+        groundColor: 0x102b3d,
+        roadColor: 0x3f5268,
+        rumbleColor1: 0x00f3ff,
+        rumbleColor2: 0xffffff,
+        skyTop: 0x08152b,
+        skyBottom: 0x123c5b
+      }
     ];
 
     this.currentConfig = this.trackConfigs[0];
   }
 
   loadTrack(trackIdx) {
-    trackIdx = trackIdx || 0;
+    const requestedIdx = Number(trackIdx);
+    if (!Number.isInteger(requestedIdx) || requestedIdx < 0 || requestedIdx >= this.trackConfigs.length) {
+      console.warn(`Índice de pista inválido (${trackIdx}); carregando a pista 0.`);
+      trackIdx = 0;
+    } else {
+      trackIdx = requestedIdx;
+    }
     this.obstacles = [];
     this.jumps = [];
     // Clear ALL previous objects from trackGroup
     while (this.trackGroup.children.length > 0) {
       var obj = this.trackGroup.children[0];
-      if (obj.geometry) obj.geometry.dispose();
-      if (obj.material) {
-        if (Array.isArray(obj.material)) {
-          for (var m = 0; m < obj.material.length; m++) obj.material[m].dispose();
-        } else {
-          obj.material.dispose();
-        }
-      }
+      this._disposeObject3D(obj);
       this.trackGroup.remove(obj);
     }
 
-    this.currentConfig = this.trackConfigs[trackIdx] || this.trackConfigs[0];
+    this.currentConfig = this.trackConfigs[trackIdx];
+    this.trackWidth = this.currentConfig.width || 28;
     this._generateCurvePoints(trackIdx);
     this._buildSkyDome();
     this._buildGroundPlane();
@@ -94,6 +119,19 @@ class TrackEngine {
     this._buildCyberpunkGates();
     this._buildRoadsideLandmarks();
     this._buildBackgroundSkyline();
+  }
+
+  _disposeObject3D(object) {
+    if (!object) return;
+    object.traverse(child => {
+      if (child.geometry && typeof child.geometry.dispose === 'function') child.geometry.dispose();
+      if (!child.material) return;
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      materials.forEach(material => {
+        if (material.userData && material.userData.ownedTexture && material.map) material.map.dispose();
+        if (typeof material.dispose === 'function') material.dispose();
+      });
+    });
   }
 
   /* --------------------------------------------------------------------------
@@ -1374,13 +1412,32 @@ class TrackEngine {
   /* --------------------------------------------------------------------------
      Track Position & Progression Utilities
      -------------------------------------------------------------------------- */
-  getTrackProgress(position) {
+  getTrackProgress(position, previousT = null) {
     if (!this.curve) return { t: 0, distance: 0, segment: this.segments[0] };
 
     var minDistSq = Infinity;
     var closestIndex = 0;
+    const sampleStride = 2;
+    const localWindow = 14;
+    const hasSeed = Number.isFinite(previousT) && this.segments.length > localWindow * 2;
+    const expectedIndex = hasSeed
+      ? Math.floor((((previousT % 1) + 1) % 1) * (this.segments.length - 1))
+      : 0;
+    const candidateIndices = [];
+    if (hasSeed) {
+      for (let offset = -localWindow; offset <= localWindow; offset++) {
+        let index = expectedIndex + offset * sampleStride;
+        const maxIndex = this.segments.length - 1;
+        while (index < 0) index += maxIndex;
+        while (index > maxIndex) index -= maxIndex;
+        candidateIndices.push(index);
+      }
+    } else {
+      for (let i = 0; i < this.segments.length; i += sampleStride) candidateIndices.push(i);
+    }
 
-    for (var i = 0; i < this.segments.length; i += 2) {
+    const testCandidates = candidates => {
+      for (const i of candidates) {
       // Track selection is horizontal: on hills the car must still find the
       // road directly beneath it rather than a distant, lower road segment.
       var dx = position.x - this.segments[i].point.x;
@@ -1390,6 +1447,19 @@ class TrackEngine {
         minDistSq = dSq;
         closestIndex = i;
       }
+      }
+    };
+    testCandidates(candidateIndices);
+
+    // A reset or a large excursion can invalidate the seed. Fall back to the
+    // full loop only when the local result is clearly not near the road.
+    const fallbackDistance = (this.trackWidth * 2.5) ** 2;
+    if (hasSeed && minDistSq > fallbackDistance) {
+      minDistSq = Infinity;
+      closestIndex = 0;
+      const globalCandidates = [];
+      for (let i = 0; i < this.segments.length; i += sampleStride) globalCandidates.push(i);
+      testCandidates(globalCandidates);
     }
 
     var seg = this.segments[closestIndex];

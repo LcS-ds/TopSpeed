@@ -7,6 +7,8 @@ class AIManager {
     this.scene = scene;
     this.bots = [];
     this.totalLaps = 3;
+    this.getRaceProgress = null;
+    this.onFinish = null;
 
     this.botPresets = [
       { name: 'Ryu (Top Rival)', color: 0xff0055, speedSkill: 1.02 },
@@ -22,6 +24,7 @@ class AIManager {
   createBots(difficulty = 'medium') {
     // Clear old bots
     this.bots.forEach(b => {
+      if (b.car && typeof b.car.dispose === 'function') b.car.dispose();
       this.scene.remove(b.car.mesh);
     });
     this.bots = [];
@@ -42,7 +45,7 @@ class AIManager {
         offsetLateral: (idx % 2 === 0 ? 1 : -1) * (2.5 + Math.random() * 2.5),
         laneBias: (idx % 2 === 0 ? 1 : -1),
         racingLineOffset: 0,
-        lastProgress: 0,
+        lastProgress: null,
         stuckTime: 0,
         recoveryCooldown: 0
       });
@@ -56,7 +59,8 @@ class AIManager {
       bot.recoveryCooldown = Math.max(0, bot.recoveryCooldown - delta);
 
       // 1. Get current track progress & target point slightly ahead on spline
-      const trackProgress = trackEngine.getTrackProgress(currentPos);
+      if (car.isFinished) return;
+      const trackProgress = trackEngine.getTrackProgress(currentPos, car.trackProgressT);
       car.trackProgressT = trackProgress.t;
 
       // Look farther ahead at speed, then read a second tangent to estimate
@@ -135,10 +139,13 @@ class AIManager {
       let aheadGap = Infinity;
       let behindGap = Infinity;
       const opponents = [playerCar, ...this.bots.filter(other => other !== bot).map(other => other.car)];
+      const progressOf = vehicle => this.getRaceProgress
+        ? this.getRaceProgress(vehicle)
+        : Math.max(0, (vehicle.lap || 1) - 1) + (vehicle.trackProgressT || 0);
 
       opponents.forEach(opponent => {
-        const forwardGap = (opponent.trackProgressT - car.trackProgressT + 1) % 1;
-        const rearGap = (car.trackProgressT - opponent.trackProgressT + 1) % 1;
+        const forwardGap = progressOf(opponent) - progressOf(car);
+        const rearGap = progressOf(car) - progressOf(opponent);
         if (forwardGap > 0.002 && forwardGap < aheadGap) {
           aheadGap = forwardGap;
           nearestAhead = opponent;
@@ -173,9 +180,9 @@ class AIManager {
       while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
 
       // AI Input state simulation
-      const trackSurface = trackEngine.getTrackProgress(targetPoint).segment.surface;
+      const trackSurface = trackEngine.getTrackProgress(targetPoint, aheadT).segment.surface;
       const surfaceGrip = trackSurface === 'snow' ? 0.52 : (trackSurface === 'dirt' ? 0.76 : 1);
-      const targetSpeed = car.maxSpeed * surfaceGrip * (1 - curveSeverity * 0.48) * (hazard ? 0.72 : 1);
+      const targetSpeed = car.maxSpeed * car.maxSpeedMultiplier * surfaceGrip * (1 - curveSeverity * 0.48) * (hazard ? 0.72 : 1);
       const shouldBrake = (hazard && hazardDistance < 2.2 && car.speed > targetSpeed + 3) ||
         (car.speed > targetSpeed + 9 && car.speed > 32);
       const inputState = {
@@ -186,26 +193,35 @@ class AIManager {
         reverse: false
       };
 
-      // 3. Rubber-banding (catch up if player is far ahead)
-      const distToPlayer = playerCar.trackProgressT - car.trackProgressT;
-      if (distToPlayer > 0.15) {
-        car.speed += delta * 15; // Speed boost to catch up
-      }
+      // 3. Rubber-banding: a bounded, temporary modifier is applied before
+      // CarEngine.update so it is not erased by the normal speed clamp.
+      const distToPlayer = progressOf(playerCar) - progressOf(car);
+      const catchup = THREE.MathUtils.clamp((distToPlayer - 0.12) / 0.9, 0, 1);
+      const desiredSpeedMultiplier = 1 + catchup * 0.18;
+      const desiredMaxSpeedMultiplier = 1 + catchup * 0.12;
+      const modifierBlend = Math.min(1, delta * 2.5);
+      car.speedMultiplier = THREE.MathUtils.lerp(car.speedMultiplier, desiredSpeedMultiplier, modifierBlend);
+      car.maxSpeedMultiplier = THREE.MathUtils.lerp(car.maxSpeedMultiplier, desiredMaxSpeedMultiplier, modifierBlend);
 
       car.update(delta, inputState, trackEngine);
 
       // Bots also complete laps. Without this, their progress resets near
       // zero after crossing the line and the results screen ranks them ahead
       // of a player who actually finished the race.
-      if (car.speed > 5 && bot.lastProgress > 0.85 && car.trackProgressT < 0.15) {
-        car.lap = Math.min(this.totalLaps, car.lap + 1);
+      if (Math.abs(car.speed) > 1 && bot.lastProgress !== null && bot.lastProgress > 0.85 && car.trackProgressT < 0.15) {
+        car.lap += 1;
+        if (car.lap > this.totalLaps && !car.isFinished) {
+          car.lap = this.totalLaps;
+          car.isFinished = true;
+          if (this.onFinish) this.onFinish(car);
+        }
       }
 
       // A bot that gets pinned against a rail, another car, or a ramp is put
       // back on the racing line. This prevents a single collision from
       // turning into a permanent traffic jam.
-      const progressDelta = Math.abs(car.trackProgressT - bot.lastProgress);
-      const madeProgress = Math.min(progressDelta, 1 - progressDelta);
+      const progressDelta = bot.lastProgress === null ? 1 : Math.abs(car.trackProgressT - bot.lastProgress);
+      const madeProgress = bot.lastProgress === null ? 1 : Math.min(progressDelta, 1 - progressDelta);
       if (car.speed < 9 && madeProgress < 0.00035 && !car.airborne) {
         bot.stuckTime += delta;
       } else {
@@ -220,7 +236,9 @@ class AIManager {
         recoveryPos.add(recoveryNormal.multiplyScalar(bot.laneBias * 2.2));
         const lapBeforeRecovery = car.lap;
         car.resetPosition(recoveryPos, Math.atan2(recoveryTangent.x, recoveryTangent.z));
-        car.lap = lapBeforeRecovery;
+        // Preserve race progress when recovering, while resetPosition clears
+        // transient physics/camera state.
+        car.lap = Math.max(1, Math.min(this.totalLaps, lapBeforeRecovery));
         car.speed = 32;
         bot.stuckTime = 0;
         bot.recoveryCooldown = 3;
@@ -242,7 +260,7 @@ class AIManager {
 
       bot.car.resetPosition(startPos, heading);
       bot.racingLineOffset = 0;
-      bot.lastProgress = startT;
+      bot.lastProgress = null;
       bot.stuckTime = 0;
       bot.recoveryCooldown = 0;
     });
